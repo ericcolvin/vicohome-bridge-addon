@@ -441,19 +441,19 @@ while true; do
     continue
   fi
 
-  if [ ${EXIT_CODE} -eq 0 ] && echo "${JSON_OUTPUT}" | grep -q "No events found"; then
-    bashio::log.info "vico-cli reported no events in the recent window."
-    bootstrap_history_if_needed
+  bashio::log.info "vico-cli output (first 200 chars): $(echo "${JSON_OUTPUT}" | head -c 200)"
+
+  # Safely get the first character using native bash (prevents pipe crashes on massive payloads)
+  first_char="${JSON_OUTPUT:0:1}"
+  if [ "${first_char}" != "[" ] && [ "${first_char}" != "{" ]; then
+    bashio::log.info "vico-cli output does not look like JSON, skipping parse this cycle."
     sleep "${POLL_INTERVAL}"
     continue
   fi
 
-  bashio::log.info "vico-cli output (first 200 chars): $(echo "${JSON_OUTPUT}" | head -c 200)"
-
-  # Quick sanity check so we don't feed clearly non-JSON into jq
-  first_char=$(printf '%s' "${JSON_OUTPUT}" | sed -n '1s/^\(.\).*$/\1/p')
-  if [ "${first_char}" != "[" ] && [ "${first_char}" != "{" ]; then
-    bashio::log.info "vico-cli output does not look like JSON (starts with '${first_char}'), skipping parse this cycle."
+  # Gracefully validate the entire JSON payload so corruption doesn't crash the add-on
+  if ! echo "${JSON_OUTPUT}" | jq empty >/dev/null 2>&1; then
+    bashio::log.warning "vico-cli returned malformed JSON. Skipping this batch to prevent crash."
     sleep "${POLL_INTERVAL}"
     continue
   fi
@@ -461,9 +461,15 @@ while true; do
   # If it's an array of events
   if echo "${JSON_OUTPUT}" | jq -e 'type=="array"' >/dev/null 2>&1; then
     echo "${JSON_OUTPUT}" | jq -c '.[]' | while read -r event; do
+      
+      # Validate individual events
+      if ! echo "${event}" | jq empty >/dev/null 2>&1; then
+         bashio::log.warning "Skipping individual corrupted event."
+         continue
+      fi
+      
       CAMERA_ID=$(echo "${event}" | jq -r '.serialNumber // .deviceId // .device_id // .camera_id // .camera.uuid // .cameraId // empty')
       if [ -z "${CAMERA_ID}" ] || [ "${CAMERA_ID}" = "null" ]; then
-        bashio::log.info "Event without camera/device ID, skipping. Event snippet: $(echo "${event}" | head -c 120)"
         continue
       fi
 
@@ -475,14 +481,10 @@ while true; do
 
       SAFE_ID=$(sanitize_id "${CAMERA_ID}")
 
-      event_preview=$(echo "${event}" | tr -d '\n' | head -c 400)
-      bashio::log.debug "Event for ${SAFE_ID} (${CAMERA_NAME}) type='${EVENT_TYPE}': ${event_preview}"
-
       ensure_discovery_published "${CAMERA_ID}" "${CAMERA_NAME}"
       publish_event_for_camera "${SAFE_ID}" "${event}"
 
       if [ "${EVENT_TYPE}" = "motion" ] || [ "${EVENT_TYPE}" = "person" ] || [ "${EVENT_TYPE}" = "human" ] || [ "${EVENT_TYPE}" = "bird" ]; then
-        bashio::log.debug "Triggering motion pulse for ${SAFE_ID} because event type '${EVENT_TYPE}' requires it."
         publish_motion_pulse "${SAFE_ID}"
       fi
     done
@@ -492,7 +494,6 @@ while true; do
 
     CAMERA_ID=$(echo "${event}" | jq -r '.serialNumber // .deviceId // .device_id // .camera_id // .camera.uuid // .cameraId // empty')
     if [ -z "${CAMERA_ID}" ] || [ "${CAMERA_ID}" = "null" ]; then
-      bashio::log.info "Single event without camera/device ID. Event snippet: $(echo "${event}" | head -c 120)"
       sleep "${POLL_INTERVAL}"
       continue
     fi
@@ -505,14 +506,10 @@ while true; do
 
     SAFE_ID=$(sanitize_id "${CAMERA_ID}")
 
-    event_preview=$(echo "${event}" | tr -d '\n' | head -c 400)
-    bashio::log.debug "Event for ${SAFE_ID} (${CAMERA_NAME}) type='${EVENT_TYPE}': ${event_preview}"
-
     ensure_discovery_published "${CAMERA_ID}" "${CAMERA_NAME}"
     publish_event_for_camera "${SAFE_ID}" "${event}"
 
     if [ "${EVENT_TYPE}" = "motion" ] || [ "${EVENT_TYPE}" = "person" ] || [ "${EVENT_TYPE}" = "human" ] || [ "${EVENT_TYPE}" = "bird" ]; then
-      bashio::log.debug "Triggering motion pulse for ${SAFE_ID} because event type '${EVENT_TYPE}' requires it."
       publish_motion_pulse "${SAFE_ID}"
     fi
   fi
