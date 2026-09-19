@@ -460,7 +460,7 @@ while true; do
 
   # If it's an array of events
   if echo "${JSON_OUTPUT}" | jq -e 'type=="array"' >/dev/null 2>&1; then
-    echo "${JSON_OUTPUT}" | jq -c 'reverse | .[]' | while read -r event; do
+    echo "${JSON_OUTPUT}" | jq -c '.[0]' | while read -r event; do
       
       # Validate individual events
       if ! echo "${event}" | jq empty >/dev/null 2>&1; then
